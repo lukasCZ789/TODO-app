@@ -32,6 +32,7 @@ type Todo = {
 };
 
 type Filter = 'open' | 'done' | 'all';
+type Tab = 'tasks' | 'timeline' | 'calendar';
 
 type Editor = {
   id: string | null;
@@ -41,6 +42,21 @@ type Editor = {
 };
 
 const STORAGE_KEY = 'todo-app.tasks.v1';
+const WEEKDAYS = ['Po', 'Út', 'St', 'Čt', 'Pá', 'So', 'Ne'];
+const MONTHS = [
+  'leden',
+  'únor',
+  'březen',
+  'duben',
+  'květen',
+  'červen',
+  'červenec',
+  'srpen',
+  'září',
+  'říjen',
+  'listopad',
+  'prosinec',
+];
 
 const COLORS = {
   bg: '#0f1218',
@@ -67,21 +83,31 @@ function greeting() {
   return 'Dobrý večer';
 }
 
-function formatDue(ms: number) {
-  const date = new Date(ms);
-  const today = new Date();
-  const isToday =
-    date.getDate() === today.getDate() &&
-    date.getMonth() === today.getMonth() &&
-    date.getFullYear() === today.getFullYear();
+function startOfDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
 
-  const time = date.toLocaleTimeString('cs-CZ', {
+function isSameDay(a: number, b: Date) {
+  const da = new Date(a);
+  return (
+    da.getFullYear() === b.getFullYear() &&
+    da.getMonth() === b.getMonth() &&
+    da.getDate() === b.getDate()
+  );
+}
+
+function formatTime(ms: number) {
+  return new Date(ms).toLocaleTimeString('cs-CZ', {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
 
-  if (isToday) return `Dnes ${time}`;
-
+function formatDue(ms: number) {
+  const date = new Date(ms);
+  const today = new Date();
+  const time = formatTime(ms);
+  if (isSameDay(ms, today)) return `Dnes ${time}`;
   const day = date.toLocaleDateString('cs-CZ', {
     weekday: 'short',
     day: 'numeric',
@@ -116,6 +142,34 @@ function toTimeInput(ms: number) {
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
+function roundToNextHalfHour(from = Date.now()) {
+  const date = new Date(from);
+  date.setSeconds(0, 0);
+  const minutes = date.getMinutes();
+  if (minutes === 0 || minutes === 30) return date.getTime();
+  if (minutes < 30) {
+    date.setMinutes(30);
+  } else {
+    date.setHours(date.getHours() + 1, 0, 0, 0);
+  }
+  return date.getTime();
+}
+
+function groupTodosByDay(todos: Todo[]) {
+  const dated = todos
+    .filter((t): t is Todo & { dueAt: number } => t.dueAt !== null)
+    .sort((a, b) => a.dueAt - b.dueAt);
+
+  const groups: Array<{ day: number; items: Array<Todo & { dueAt: number }> }> = [];
+  for (const todo of dated) {
+    const day = startOfDay(new Date(todo.dueAt));
+    const last = groups[groups.length - 1];
+    if (last && last.day === day) last.items.push(todo);
+    else groups.push({ day, items: [todo] });
+  }
+  return groups;
+}
+
 function sortTodos(todos: Todo[]) {
   return [...todos].sort((a, b) => {
     if (a.completed !== b.completed) return a.completed ? 1 : -1;
@@ -124,6 +178,104 @@ function sortTodos(todos: Todo[]) {
     if (b.dueAt === null) return -1;
     return a.dueAt - b.dueAt;
   });
+}
+
+function monthCells(year: number, month: number) {
+  const first = new Date(year, month, 1);
+  const startOffset = (first.getDay() + 6) % 7;
+  const days = new Date(year, month + 1, 0).getDate();
+  const cells: Array<{ date: Date | null; key: string }> = [];
+  for (let i = 0; i < startOffset; i += 1) {
+    cells.push({ date: null, key: `empty-${i}` });
+  }
+  for (let day = 1; day <= days; day += 1) {
+    cells.push({ date: new Date(year, month, day), key: `day-${day}` });
+  }
+  while (cells.length % 7 !== 0) {
+    cells.push({ date: null, key: `tail-${cells.length}` });
+  }
+  return cells;
+}
+
+function DoneButton({
+  completed,
+  onPress,
+}: {
+  completed: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      style={[styles.doneButton, completed && styles.doneButtonActive]}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={completed ? 'Označit jako nedokončené' : 'Označit jako hotové'}
+    >
+      <Text
+        style={[styles.doneButtonText, completed && styles.doneButtonTextActive]}
+      >
+        {completed ? 'Hotovo ✓' : 'Označit jako hotové'}
+      </Text>
+    </Pressable>
+  );
+}
+
+function TimelineItems({
+  items,
+  onOpen,
+  onToggle,
+}: {
+  items: Todo[];
+  onOpen: (todo: Todo) => void;
+  onToggle: (id: string) => void;
+}) {
+  return (
+    <View style={styles.timeline}>
+      {items.map((item, index) => (
+        <View key={item.id} style={styles.timelineRow}>
+          <View style={styles.timelineTimeCol}>
+            <Text style={styles.timelineTime}>
+              {item.dueAt ? formatTime(item.dueAt) : '--:--'}
+            </Text>
+            <View style={styles.timelineRail}>
+              <View
+                style={[
+                  styles.timelineDot,
+                  item.completed && styles.timelineDotDone,
+                ]}
+              />
+              {index < items.length - 1 ? (
+                <View style={styles.timelineLine} />
+              ) : null}
+            </View>
+          </View>
+          <View
+            style={[
+              styles.timelineCard,
+              item.completed && styles.timelineCardDone,
+            ]}
+          >
+            <Pressable onPress={() => onOpen(item)}>
+              <Text
+                style={[styles.cardTitle, item.completed && styles.cardTitleDone]}
+              >
+                {item.title}
+              </Text>
+              {item.description ? (
+                <Text style={styles.cardDesc} numberOfLines={2}>
+                  {item.description}
+                </Text>
+              ) : null}
+            </Pressable>
+            <DoneButton
+              completed={item.completed}
+              onPress={() => onToggle(item.id)}
+            />
+          </View>
+        </View>
+      ))}
+    </View>
+  );
 }
 
 export default function App() {
@@ -139,9 +291,15 @@ function TodoApp() {
   const [todos, setTodos] = useState<Todo[]>([]);
   const [ready, setReady] = useState(false);
   const [filter, setFilter] = useState<Filter>('open');
+  const [tab, setTab] = useState<Tab>('tasks');
   const [editor, setEditor] = useState<Editor | null>(null);
   const [pickerMode, setPickerMode] = useState<'date' | 'time' | null>(null);
   const [awaitingTime, setAwaitingTime] = useState(false);
+  const [monthCursor, setMonthCursor] = useState(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  });
+  const [selectedDay, setSelectedDay] = useState(() => new Date());
 
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY)
@@ -168,10 +326,30 @@ function TodoApp() {
     return sortTodos(filtered);
   }, [filter, todos]);
 
-  const openNew = () => {
+  const daysWithTasks = useMemo(() => {
+    const set = new Set<number>();
+    for (const todo of todos) {
+      if (todo.dueAt) set.add(startOfDay(new Date(todo.dueAt)));
+    }
+    return set;
+  }, [todos]);
+
+  const dayTodos = useMemo(() => {
+    return todos
+      .filter((t) => t.dueAt !== null && isSameDay(t.dueAt, selectedDay))
+      .sort((a, b) => (a.dueAt ?? 0) - (b.dueAt ?? 0));
+  }, [selectedDay, todos]);
+
+  const timelineGroups = useMemo(() => groupTodosByDay(todos), [todos]);
+  const unscheduled = useMemo(
+    () => todos.filter((t) => t.dueAt === null),
+    [todos],
+  );
+
+  const openNew = (dueAt: number | null = roundToNextHalfHour()) => {
     setPickerMode(null);
     setAwaitingTime(false);
-    setEditor({ id: null, title: '', description: '', dueAt: null });
+    setEditor({ id: null, title: '', description: '', dueAt });
   };
 
   const openEdit = (todo: Todo) => {
@@ -195,7 +373,6 @@ function TodoApp() {
     if (!editor) return;
     const title = editor.title.trim();
     if (!title) return;
-
     const description = editor.description.trim();
 
     if (editor.id === null) {
@@ -268,127 +445,327 @@ function TodoApp() {
     }
   };
 
-  const pickDue = () => {
-    setAwaitingTime(true);
-    setPickerMode('date');
-  };
-
   const canSave = Boolean(editor?.title.trim());
+  const editingTodo = editor?.id
+    ? todos.find((t) => t.id === editor.id)
+    : undefined;
+  const tabBarHeight = 62 + insets.bottom;
+  const cells = monthCells(monthCursor.getFullYear(), monthCursor.getMonth());
+  const today = new Date();
 
   return (
     <View style={styles.root}>
       <StatusBar style="light" />
       <SafeAreaView style={styles.safe} edges={['top']}>
-        <View style={styles.header}>
-          <Text style={styles.hello}>{greeting()}</Text>
-          <Text style={styles.title}>Moje úkoly</Text>
-          <Text style={styles.subtitle}>
-            {todos.length === 0
-              ? 'Přidej první úkol tlačítkem +'
-              : remaining === 0
-                ? 'Všechno je hotové'
-                : `${remaining} ${remaining === 1 ? 'úkol zbývá' : 'úkolů zbývá'}`}
-          </Text>
-        </View>
-
-        <View style={styles.filters}>
-          {(
-            [
-              ['open', 'Aktivní'],
-              ['done', 'Hotové'],
-              ['all', 'Vše'],
-            ] as const
-          ).map(([key, label]) => (
-            <Pressable
-              key={key}
-              onPress={() => setFilter(key)}
-              style={[styles.chip, filter === key && styles.chipActive]}
-            >
-              <Text style={[styles.chipText, filter === key && styles.chipTextActive]}>
-                {label}
+        {tab === 'tasks' ? (
+          <>
+            <View style={styles.header}>
+              <Text style={styles.hello}>{greeting()}</Text>
+              <Text style={styles.title}>Moje úkoly</Text>
+              <Text style={styles.subtitle}>
+                {todos.length === 0
+                  ? 'Přidej první úkol tlačítkem +'
+                  : remaining === 0
+                    ? 'Všechno je hotové'
+                    : `${remaining} ${remaining === 1 ? 'úkol zbývá' : 'úkolů zbývá'}`}
               </Text>
-            </Pressable>
-          ))}
-        </View>
+            </View>
 
-        <FlatList
-          data={visible}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={[
-            styles.list,
-            visible.length === 0 && styles.listEmpty,
-            { paddingBottom: 108 + insets.bottom },
-          ]}
-          keyboardShouldPersistTaps="handled"
-          ListEmptyComponent={
-            ready ? (
+            <View style={styles.filters}>
+              {(
+                [
+                  ['open', 'Aktivní'],
+                  ['done', 'Hotové'],
+                  ['all', 'Vše'],
+                ] as const
+              ).map(([key, label]) => (
+                <Pressable
+                  key={key}
+                  onPress={() => setFilter(key)}
+                  style={[styles.chip, filter === key && styles.chipActive]}
+                >
+                  <Text
+                    style={[styles.chipText, filter === key && styles.chipTextActive]}
+                  >
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <FlatList
+              data={visible}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={[
+                styles.list,
+                visible.length === 0 && styles.listEmpty,
+                { paddingBottom: 24 + tabBarHeight },
+              ]}
+              keyboardShouldPersistTaps="handled"
+              ListEmptyComponent={
+                ready ? (
+                  <View style={styles.empty}>
+                    <Text style={styles.emptyTitle}>
+                      {filter === 'done' ? 'Zatím nic hotového' : 'Žádné úkoly'}
+                    </Text>
+                    <Text style={styles.emptyHint}>
+                      Klepni na + a napiš název, popis a termín.
+                    </Text>
+                  </View>
+                ) : null
+              }
+              renderItem={({ item }) => {
+                const overdue =
+                  !item.completed && item.dueAt !== null && item.dueAt < Date.now();
+                return (
+                  <View style={styles.card}>
+                    <Pressable
+                      style={styles.cardBody}
+                      onPress={() => openEdit(item)}
+                      accessibilityRole="button"
+                      accessibilityLabel="Otevřít úkol"
+                    >
+                      <Text
+                        style={[
+                          styles.cardTitle,
+                          item.completed && styles.cardTitleDone,
+                        ]}
+                        numberOfLines={2}
+                      >
+                        {item.title}
+                      </Text>
+                      {item.description ? (
+                        <Text style={styles.cardDesc} numberOfLines={2}>
+                          {item.description}
+                        </Text>
+                      ) : null}
+                      {item.dueAt !== null ? (
+                        <View
+                          style={[styles.dueChip, overdue && styles.dueChipLate]}
+                        >
+                          <Text
+                            style={[
+                              styles.dueChipText,
+                              overdue && styles.dueChipTextLate,
+                            ]}
+                          >
+                            {overdue ? 'Po termínu · ' : ''}
+                            {formatDue(item.dueAt)}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </Pressable>
+                    <DoneButton
+                      completed={item.completed}
+                      onPress={() => toggleTodo(item.id)}
+                    />
+                  </View>
+                );
+              }}
+            />
+          </>
+        ) : tab === 'timeline' ? (
+          <ScrollView
+            contentContainerStyle={[
+              styles.calendarPage,
+              { paddingBottom: 24 + tabBarHeight },
+            ]}
+          >
+            <View style={styles.header}>
+              <Text style={styles.hello}>Přehled</Text>
+              <Text style={styles.title}>Časová osa</Text>
+              <Text style={styles.subtitle}>
+                Úkoly podle data a času, který nastavíš při vytvoření
+              </Text>
+            </View>
+
+            {timelineGroups.length === 0 && unscheduled.length === 0 ? (
               <View style={styles.empty}>
-                <Text style={styles.emptyTitle}>
-                  {filter === 'done' ? 'Zatím nic hotového' : 'Žádné úkoly'}
-                </Text>
+                <Text style={styles.emptyTitle}>Zatím žádný termín</Text>
                 <Text style={styles.emptyHint}>
-                  Klepni na + a napiš název, popis a termín.
+                  Přidej úkol a nastav datum i čas — objeví se tady na ose.
                 </Text>
               </View>
-            ) : null
-          }
-          renderItem={({ item }) => {
-            const overdue =
-              !item.completed && item.dueAt !== null && item.dueAt < Date.now();
-            return (
-              <Pressable
-                style={styles.card}
-                onPress={() => openEdit(item)}
-                accessibilityRole="button"
-                accessibilityLabel="Otevřít úkol"
-              >
-                <Pressable
-                  style={styles.checkHit}
-                  onPress={() => toggleTodo(item.id)}
-                  hitSlop={8}
-                  accessibilityRole="checkbox"
-                  accessibilityState={{ checked: item.completed }}
-                >
-                  <View style={[styles.check, item.completed && styles.checkDone]}>
-                    {item.completed ? <Text style={styles.checkMark}>✓</Text> : null}
-                  </View>
-                </Pressable>
-                <View style={styles.cardBody}>
-                  <Text
-                    style={[styles.cardTitle, item.completed && styles.cardTitleDone]}
-                    numberOfLines={2}
-                  >
-                    {item.title}
+            ) : (
+              timelineGroups.map((group) => (
+                <View key={group.day}>
+                  <Text style={styles.timelineTitle}>
+                    {new Date(group.day).toLocaleDateString('cs-CZ', {
+                      weekday: 'long',
+                      day: 'numeric',
+                      month: 'long',
+                    })}
                   </Text>
-                  {item.description ? (
-                    <Text style={styles.cardDesc} numberOfLines={2}>
-                      {item.description}
-                    </Text>
-                  ) : null}
-                  {item.dueAt !== null ? (
-                    <View
-                      style={[styles.dueChip, overdue && styles.dueChipLate]}
-                    >
-                      <Text style={[styles.dueChipText, overdue && styles.dueChipTextLate]}>
-                        {overdue ? 'Po termínu · ' : ''}
-                        {formatDue(item.dueAt)}
-                      </Text>
-                    </View>
-                  ) : null}
+                  <TimelineItems
+                    items={group.items}
+                    onOpen={openEdit}
+                    onToggle={toggleTodo}
+                  />
                 </View>
+              ))
+            )}
+
+            {unscheduled.length > 0 ? (
+              <View>
+                <Text style={styles.timelineTitle}>Bez termínu</Text>
+                <TimelineItems
+                  items={unscheduled}
+                  onOpen={openEdit}
+                  onToggle={toggleTodo}
+                />
+              </View>
+            ) : null}
+          </ScrollView>
+        ) : (
+          <ScrollView
+            contentContainerStyle={[
+              styles.calendarPage,
+              { paddingBottom: 24 + tabBarHeight },
+            ]}
+          >
+            <View style={styles.header}>
+              <Text style={styles.hello}>Přehled</Text>
+              <Text style={styles.title}>Kalendář</Text>
+              <Text style={styles.subtitle}>
+                Vyber den a uvidíš úkoly na časové ose
+              </Text>
+            </View>
+
+            <View style={styles.monthBar}>
+              <Pressable
+                onPress={() =>
+                  setMonthCursor(
+                    new Date(monthCursor.getFullYear(), monthCursor.getMonth() - 1, 1),
+                  )
+                }
+                style={styles.monthNav}
+              >
+                <Text style={styles.monthNavText}>‹</Text>
               </Pressable>
-            );
-          }}
-        />
+              <Text style={styles.monthTitle}>
+                {MONTHS[monthCursor.getMonth()]} {monthCursor.getFullYear()}
+              </Text>
+              <Pressable
+                onPress={() =>
+                  setMonthCursor(
+                    new Date(monthCursor.getFullYear(), monthCursor.getMonth() + 1, 1),
+                  )
+                }
+                style={styles.monthNav}
+              >
+                <Text style={styles.monthNavText}>›</Text>
+              </Pressable>
+            </View>
+
+            <View style={styles.weekRow}>
+              {WEEKDAYS.map((day) => (
+                <Text key={day} style={styles.weekLabel}>
+                  {day}
+                </Text>
+              ))}
+            </View>
+
+            <View style={styles.grid}>
+              {cells.map((cell) => {
+                if (!cell.date) {
+                  return <View key={cell.key} style={styles.dayCell} />;
+                }
+                const selected = isSameDay(cell.date.getTime(), selectedDay);
+                const isToday = isSameDay(cell.date.getTime(), today);
+                const hasTasks = daysWithTasks.has(startOfDay(cell.date));
+                return (
+                  <Pressable
+                    key={cell.key}
+                    style={[
+                      styles.dayCell,
+                      selected && styles.dayCellSelected,
+                      isToday && !selected && styles.dayCellToday,
+                    ]}
+                    onPress={() => setSelectedDay(cell.date as Date)}
+                  >
+                    <Text
+                      style={[
+                        styles.dayNum,
+                        selected && styles.dayNumSelected,
+                      ]}
+                    >
+                      {cell.date.getDate()}
+                    </Text>
+                    {hasTasks ? (
+                      <View
+                        style={[styles.dayDot, selected && styles.dayDotSelected]}
+                      />
+                    ) : (
+                      <View style={styles.dayDotSpacer} />
+                    )}
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <Text style={styles.timelineTitle}>
+              {selectedDay.toLocaleDateString('cs-CZ', {
+                weekday: 'long',
+                day: 'numeric',
+                month: 'long',
+              })}
+            </Text>
+
+            {dayTodos.length === 0 ? (
+              <View style={styles.empty}>
+                <Text style={styles.emptyTitle}>Nic naplánovaného</Text>
+                <Text style={styles.emptyHint}>
+                  Přidej úkol s datem, nebo klepni na + pro tento den.
+                </Text>
+              </View>
+            ) : (
+              <TimelineItems
+                items={dayTodos}
+                onOpen={openEdit}
+                onToggle={toggleTodo}
+              />
+            )}
+          </ScrollView>
+        )}
 
         <Pressable
-          style={[styles.fab, { bottom: 24 + insets.bottom }]}
-          onPress={openNew}
+          style={[styles.fab, { bottom: 16 + tabBarHeight }]}
+          onPress={() => {
+            if (tab === 'calendar') {
+              const due = new Date(selectedDay);
+              due.setHours(9, 0, 0, 0);
+              openNew(due.getTime());
+              return;
+            }
+            openNew();
+          }}
           accessibilityRole="button"
           accessibilityLabel="Nový úkol"
         >
           <Text style={styles.fabPlus}>+</Text>
         </Pressable>
+
+        <View style={[styles.tabBar, { paddingBottom: Math.max(insets.bottom, 10) }]}>
+          <Pressable style={styles.tabBtn} onPress={() => setTab('tasks')}>
+            <Text style={[styles.tabLabel, tab === 'tasks' && styles.tabLabelActive]}>
+              Úkoly
+            </Text>
+          </Pressable>
+          <Pressable style={styles.tabBtn} onPress={() => setTab('timeline')}>
+            <Text
+              style={[styles.tabLabel, tab === 'timeline' && styles.tabLabelActive]}
+            >
+              Osa
+            </Text>
+          </Pressable>
+          <Pressable style={styles.tabBtn} onPress={() => setTab('calendar')}>
+            <Text
+              style={[styles.tabLabel, tab === 'calendar' && styles.tabLabelActive]}
+            >
+              Kalendář
+            </Text>
+          </Pressable>
+        </View>
       </SafeAreaView>
 
       <Modal
@@ -502,11 +879,32 @@ function TodoApp() {
                     />
                   </View>
                 ) : (
-                  <Pressable style={styles.dueButton} onPress={pickDue}>
-                    <Text style={styles.dueButtonText}>
-                      {editor.dueAt ? formatDue(editor.dueAt) : 'Vybrat datum a čas'}
-                    </Text>
-                  </Pressable>
+                  <View style={styles.webDueRow}>
+                    <Pressable
+                      style={[styles.dueButton, styles.webDueField]}
+                      onPress={() => {
+                        setAwaitingTime(false);
+                        setPickerMode('date');
+                      }}
+                    >
+                      <Text style={styles.dueButtonText}>
+                        {editor.dueAt
+                          ? new Date(editor.dueAt).toLocaleDateString('cs-CZ')
+                          : 'Datum'}
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.dueButton, styles.webDueField]}
+                      onPress={() => {
+                        setAwaitingTime(false);
+                        setPickerMode('time');
+                      }}
+                    >
+                      <Text style={styles.dueButtonText}>
+                        {editor.dueAt ? formatTime(editor.dueAt) : 'Čas'}
+                      </Text>
+                    </Pressable>
+                  </View>
                 )}
                 {editor.dueAt ? (
                   <Pressable
@@ -529,12 +927,33 @@ function TodoApp() {
                 ) : null}
 
                 {editor.id ? (
-                  <Pressable
-                    style={styles.deleteBtn}
-                    onPress={() => confirmDelete(editor.id as string, true)}
-                  >
-                    <Text style={styles.deleteBtnText}>Smazat úkol</Text>
-                  </Pressable>
+                  <>
+                    <Pressable
+                      style={[
+                        styles.doneButton,
+                        styles.doneButtonLarge,
+                        editingTodo?.completed && styles.doneButtonActive,
+                      ]}
+                      onPress={() => toggleTodo(editor.id as string)}
+                    >
+                      <Text
+                        style={[
+                          styles.doneButtonText,
+                          editingTodo?.completed && styles.doneButtonTextActive,
+                        ]}
+                      >
+                        {editingTodo?.completed
+                          ? 'Hotovo ✓  ·  klepni pro vrácení'
+                          : 'Označit jako hotové'}
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      style={styles.deleteBtn}
+                      onPress={() => confirmDelete(editor.id as string, true)}
+                    >
+                      <Text style={styles.deleteBtnText}>Smazat úkol</Text>
+                    </Pressable>
+                  </>
                 ) : null}
               </ScrollView>
             ) : null}
@@ -614,6 +1033,7 @@ const styles = StyleSheet.create({
   empty: {
     alignItems: 'center',
     paddingHorizontal: 28,
+    paddingVertical: 24,
   },
   emptyTitle: {
     color: COLORS.text,
@@ -628,39 +1048,14 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   card: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
     backgroundColor: COLORS.card,
     borderRadius: 18,
     borderWidth: 1,
     borderColor: COLORS.cardBorder,
     padding: 14,
-    gap: 12,
-  },
-  checkHit: {
-    paddingTop: 2,
-  },
-  check: {
-    width: 26,
-    height: 26,
-    borderRadius: 8,
-    borderWidth: 2,
-    borderColor: COLORS.muted,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  checkDone: {
-    borderColor: COLORS.done,
-    backgroundColor: 'rgba(61, 214, 140, 0.18)',
-  },
-  checkMark: {
-    color: COLORS.done,
-    fontWeight: '800',
-    fontSize: 15,
   },
   cardBody: {
-    flex: 1,
-    gap: 6,
+    gap: 8,
   },
   cardTitle: {
     color: COLORS.text,
@@ -696,6 +1091,32 @@ const styles = StyleSheet.create({
   dueChipTextLate: {
     color: COLORS.warning,
   },
+  doneButton: {
+    marginTop: 10,
+    alignSelf: 'stretch',
+    alignItems: 'center',
+    backgroundColor: COLORS.accentSoft,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  doneButtonLarge: {
+    marginTop: 24,
+    alignSelf: 'stretch',
+    alignItems: 'center',
+    paddingVertical: 14,
+  },
+  doneButtonActive: {
+    backgroundColor: 'rgba(61, 214, 140, 0.18)',
+  },
+  doneButtonText: {
+    color: COLORS.accent,
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  doneButtonTextActive: {
+    color: COLORS.done,
+  },
   fab: {
     position: 'absolute',
     right: 22,
@@ -705,12 +1126,176 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.accent,
     alignItems: 'center',
     justifyContent: 'center',
+    zIndex: 2,
   },
   fabPlus: {
     color: COLORS.text,
     fontSize: 34,
     marginTop: -2,
     fontWeight: '500',
+  },
+  tabBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: 'row',
+    backgroundColor: '#151a24',
+    borderTopWidth: 1,
+    borderTopColor: COLORS.cardBorder,
+    paddingTop: 10,
+  },
+  tabBtn: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  tabLabel: {
+    color: COLORS.muted,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  tabLabelActive: {
+    color: COLORS.text,
+  },
+  calendarPage: {
+    paddingBottom: 24,
+  },
+  monthBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 18,
+    marginBottom: 8,
+  },
+  monthNav: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: COLORS.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  monthNavText: {
+    color: COLORS.text,
+    fontSize: 24,
+    marginTop: -2,
+  },
+  monthTitle: {
+    color: COLORS.text,
+    fontSize: 18,
+    fontWeight: '700',
+    textTransform: 'capitalize',
+  },
+  weekRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 12,
+    marginBottom: 4,
+  },
+  weekLabel: {
+    flex: 1,
+    textAlign: 'center',
+    color: COLORS.muted,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    paddingHorizontal: 12,
+  },
+  dayCell: {
+    width: '14.28%',
+    aspectRatio: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+  },
+  dayCellSelected: {
+    backgroundColor: COLORS.accent,
+  },
+  dayCellToday: {
+    borderWidth: 1,
+    borderColor: COLORS.accent,
+  },
+  dayNum: {
+    color: COLORS.text,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  dayNumSelected: {
+    color: COLORS.text,
+  },
+  dayDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: COLORS.accent,
+    marginTop: 3,
+  },
+  dayDotSelected: {
+    backgroundColor: COLORS.text,
+  },
+  dayDotSpacer: {
+    height: 9,
+  },
+  timelineTitle: {
+    marginTop: 18,
+    marginHorizontal: 22,
+    marginBottom: 12,
+    color: COLORS.text,
+    fontSize: 18,
+    fontWeight: '700',
+    textTransform: 'capitalize',
+  },
+  timeline: {
+    paddingHorizontal: 16,
+  },
+  timelineRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  timelineTimeCol: {
+    width: 58,
+    alignItems: 'center',
+  },
+  timelineTime: {
+    color: COLORS.muted,
+    fontSize: 13,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  timelineRail: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  timelineDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: COLORS.accent,
+  },
+  timelineDotDone: {
+    backgroundColor: COLORS.done,
+  },
+  timelineLine: {
+    width: 2,
+    flex: 1,
+    minHeight: 18,
+    backgroundColor: COLORS.cardBorder,
+    marginTop: 4,
+  },
+  timelineCard: {
+    flex: 1,
+    backgroundColor: COLORS.card,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+    padding: 12,
+    marginBottom: 12,
+    gap: 6,
+  },
+  timelineCardDone: {
+    opacity: 0.7,
   },
   modalRoot: {
     flex: 1,
@@ -800,7 +1385,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   deleteBtn: {
-    marginTop: 32,
+    marginTop: 16,
     alignItems: 'center',
     paddingVertical: 14,
     borderRadius: 14,
