@@ -22,6 +22,10 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
+import {
+  ensureReminderPermissions,
+  syncTaskReminders,
+} from './reminders';
 
 type Todo = {
   id: string;
@@ -42,6 +46,7 @@ type Editor = {
 };
 
 const STORAGE_KEY = 'todo-app.tasks.v1';
+const REMINDERS_KEY = 'todo-app.reminders.v1';
 const WEEKDAYS = ['Po', 'Út', 'St', 'Čt', 'Pá', 'So', 'Ne'];
 const MONTHS = [
   'leden',
@@ -59,17 +64,19 @@ const MONTHS = [
 ];
 
 const COLORS = {
-  bg: '#0f1218',
-  card: '#1a2030',
-  cardBorder: '#2b3448',
-  text: '#f4f6fb',
-  muted: '#8d97ab',
-  accent: '#5b8cff',
-  accentSoft: 'rgba(91, 140, 255, 0.16)',
-  done: '#3dd68c',
-  danger: '#ff6b7a',
-  warning: '#ffb347',
-  field: '#141924',
+  bg: '#07090f',
+  card: '#121622',
+  cardBorder: '#232a3d',
+  text: '#f3f6ff',
+  muted: '#8e97b3',
+  accent: '#7c6bff',
+  accentSoft: 'rgba(124, 107, 255, 0.2)',
+  cyan: '#5ce1e6',
+  done: '#3ee0a0',
+  danger: '#ff5d73',
+  warning: '#ffc857',
+  field: '#0c1018',
+  bar: '#0d111a',
 };
 
 function createId() {
@@ -300,13 +307,20 @@ function TodoApp() {
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
   const [selectedDay, setSelectedDay] = useState(() => new Date());
+  const [remindersOn, setRemindersOn] = useState(true);
 
   useEffect(() => {
-    AsyncStorage.getItem(STORAGE_KEY)
-      .then((raw) => {
-        if (!raw) return;
-        const parsed = JSON.parse(raw) as Todo[];
-        if (Array.isArray(parsed)) setTodos(parsed);
+    Promise.all([
+      AsyncStorage.getItem(STORAGE_KEY),
+      AsyncStorage.getItem(REMINDERS_KEY),
+    ])
+      .then(([raw, remindersRaw]) => {
+        if (raw) {
+          const parsed = JSON.parse(raw) as Todo[];
+          if (Array.isArray(parsed)) setTodos(parsed);
+        }
+        if (remindersRaw === '0') setRemindersOn(false);
+        if (remindersRaw === '1') setRemindersOn(true);
       })
       .catch(() => {})
       .finally(() => setReady(true));
@@ -316,6 +330,12 @@ function TodoApp() {
     if (!ready) return;
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(todos)).catch(() => {});
   }, [ready, todos]);
+
+  useEffect(() => {
+    if (!ready) return;
+    AsyncStorage.setItem(REMINDERS_KEY, remindersOn ? '1' : '0').catch(() => {});
+    syncTaskReminders(todos, remindersOn).catch(() => {});
+  }, [ready, todos, remindersOn]);
 
   const remaining = todos.filter((t) => !t.completed).length;
   const visible = useMemo(() => {
@@ -469,6 +489,31 @@ function TodoApp() {
                     ? 'Všechno je hotové'
                     : `${remaining} ${remaining === 1 ? 'úkol zbývá' : 'úkolů zbývá'}`}
               </Text>
+              <Pressable
+                style={[styles.remindRow, remindersOn && styles.remindRowOn]}
+                onPress={async () => {
+                  if (!remindersOn) {
+                    const allowed = await ensureReminderPermissions();
+                    if (!allowed) {
+                      Alert.alert(
+                        'Oznámení jsou vypnutá',
+                        Platform.OS === 'web'
+                          ? 'Připomínky fungují v Expo Go na telefonu, ne ve webu.'
+                          : 'Povol oznámení v nastavení telefonu, jinak ti úkoly nepřipomeneme.',
+                      );
+                      return;
+                    }
+                  }
+                  setRemindersOn((value) => !value);
+                }}
+              >
+                <View style={[styles.remindDot, remindersOn && styles.remindDotOn]} />
+                <Text style={[styles.remindText, remindersOn && styles.remindTextOn]}>
+                  {remindersOn
+                    ? 'Připomínky zapnuté · 15 min před a v termínu'
+                    : 'Připomínky vypnuté'}
+                </Text>
+              </Pressable>
             </View>
 
             <View style={styles.filters}>
@@ -551,6 +596,9 @@ function TodoApp() {
                           >
                             {overdue ? 'Po termínu · ' : ''}
                             {formatDue(item.dueAt)}
+                            {remindersOn && !item.completed && item.dueAt > Date.now()
+                              ? ' · připomínka'
+                              : ''}
                           </Text>
                         </View>
                       ) : null}
@@ -915,6 +963,11 @@ function TodoApp() {
                     <Text style={styles.clearDue}>Odstranit termín</Text>
                   </Pressable>
                 ) : null}
+                <Text style={styles.clearDue}>
+                  {remindersOn
+                    ? 'Připomínka přijde 15 min před termínem a přesně v čase úkolu.'
+                    : 'Připomínky jsou vypnuté — zapni je na hlavní obrazovce.'}
+                </Text>
 
                 {pickerMode && Platform.OS !== 'web' ? (
                   <DateTimePicker
@@ -995,6 +1048,40 @@ const styles = StyleSheet.create({
     marginTop: 6,
     color: COLORS.muted,
     fontSize: 16,
+  },
+  remindRow: {
+    marginTop: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  remindRowOn: {
+    backgroundColor: COLORS.accentSoft,
+    borderColor: COLORS.accent,
+  },
+  remindDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: COLORS.muted,
+  },
+  remindDotOn: {
+    backgroundColor: COLORS.cyan,
+  },
+  remindText: {
+    color: COLORS.muted,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  remindTextOn: {
+    color: COLORS.text,
   },
   filters: {
     flexDirection: 'row',
@@ -1081,7 +1168,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
   },
   dueChipLate: {
-    backgroundColor: 'rgba(255, 179, 71, 0.16)',
+    backgroundColor: 'rgba(255, 200, 87, 0.16)',
   },
   dueChipText: {
     color: COLORS.accent,
@@ -1107,7 +1194,7 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
   },
   doneButtonActive: {
-    backgroundColor: 'rgba(61, 214, 140, 0.18)',
+    backgroundColor: 'rgba(62, 224, 160, 0.18)',
   },
   doneButtonText: {
     color: COLORS.accent,
@@ -1140,7 +1227,7 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     flexDirection: 'row',
-    backgroundColor: '#151a24',
+    backgroundColor: COLORS.bar,
     borderTopWidth: 1,
     borderTopColor: COLORS.cardBorder,
     paddingTop: 10,
@@ -1389,7 +1476,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 14,
     borderRadius: 14,
-    backgroundColor: 'rgba(255, 107, 122, 0.12)',
+    backgroundColor: 'rgba(255, 93, 115, 0.12)',
   },
   deleteBtnText: {
     color: COLORS.danger,
